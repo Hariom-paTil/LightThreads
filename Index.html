@@ -1,83 +1,129 @@
-﻿<<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <title>LightThreads - Terminal Private Session</title>
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { 
-            background-color: #000000; 
-            color: #00ff66; 
-            font-family: 'Courier New', Courier, monospace; 
-            height: 100vh; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: #000000;
+            color: #00ff66;
+            font-family: 'Courier New', Courier, monospace;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
             padding: 20px;
         }
-        #console-container { 
-            width: 100%; 
-            max-width: 760px; 
-            height: 85vh; 
-            border: 1px solid #00ff66; 
-            background: #050505; 
-            display: flex; 
-            flex-direction: column; 
-            padding: 16px; 
+
+        #console-container {
+            width: 100%;
+            max-width: 760px;
+            height: 85vh;
+            border: 1px solid #00ff66;
+            background: #050505;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
             box-shadow: 0 0 15px rgba(0, 255, 102, 0.15);
         }
-        #header { 
-            border-bottom: 1px dashed #00ff66; 
-            padding-bottom: 8px; 
-            margin-bottom: 12px; 
+
+        #header {
+            border-bottom: 1px dashed #00ff66;
+            padding-bottom: 8px;
+            margin-bottom: 12px;
             font-size: 0.85em;
         }
-        #status { color: #ffcc00; margin-top: 4px; }
+
+        #status {
+            color: #ffcc00;
+            margin-top: 4px;
+        }
+
         #session-controls {
             margin-bottom: 12px;
             display: flex;
             gap: 10px;
         }
-        #terminal-log { 
-            flex: 1; 
-            overflow-y: auto; 
-            margin-bottom: 12px; 
+
+        #terminal-log {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 12px;
             padding-right: 8px;
             display: flex;
             flex-direction: column;
             gap: 6px;
         }
-        .log-entry { word-break: break-all; line-height: 1.4; }
-        .sys-msg { color: #0088ff; }
-        .user-msg { color: #00ff66; }
-        .err-msg { color: #ff3333; }
-        .input-row { 
-            display: flex; 
-            align-items: center; 
-            border-top: 1px solid #222; 
+
+        .log-entry {
+            word-break: break-all;
+            line-height: 1.4;
+        }
+
+        .sys-msg {
+            color: #0088ff;
+        }
+
+        .user-msg {
+            color: #00ff66;
+        }
+
+        .err-msg {
+            color: #ff3333;
+        }
+
+        .input-row {
+            display: flex;
+            align-items: center;
+            border-top: 1px solid #222;
             padding-top: 10px;
         }
-        .prompt-symbol { color: #00ff66; margin-right: 8px; font-weight: bold; }
-        input { 
-            flex: 1; 
-            background: transparent; 
-            border: none; 
-            color: #00ff66; 
-            font-family: 'Courier New', Courier, monospace; 
-            font-size: 1em; 
-            outline: none; 
+
+        .prompt-symbol {
+            color: #00ff66;
+            margin-right: 8px;
+            font-weight: bold;
         }
-        input:disabled { color: #444444; }
-        button { 
-            background: transparent; 
-            border: 1px solid #00ff66; 
-            color: #00ff66; 
-            font-family: 'Courier New', Courier, monospace; 
-            padding: 4px 12px; 
-            cursor: pointer; 
+
+        input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #00ff66;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 1em;
+            outline: none;
         }
-        button:hover:not(:disabled) { background: #00ff66; color: #000; }
-        button:disabled { border-color: #444; color: #444; cursor: not-allowed; }
+
+            input:disabled {
+                color: #444444;
+            }
+
+        button {
+            background: transparent;
+            border: 1px solid #00ff66;
+            color: #00ff66;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 4px 12px;
+            cursor: pointer;
+        }
+
+            button:hover:not(:disabled) {
+                background: #00ff66;
+                color: #000;
+            }
+
+            button:disabled {
+                border-color: #444;
+                color: #444;
+                cursor: not-allowed;
+            }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
 </head>
@@ -158,14 +204,14 @@
             try {
                 const res = await fetch("/api/session/create", { method: "POST" });
                 const data = await res.json();
-                
+
                 currentSessionId = data.sessionId;
                 currentToken = data.token;
                 currentRole = "Host";
 
                 const shareUrl = `${window.location.origin}/?session=${currentSessionId}&token=${currentToken}`;
                 sessionInfo.innerText = `Room: ${currentSessionId}`;
-                
+
                 appendLog(`[SYSTEM] Session Created!`, "sys-msg");
                 appendLog(`[INVITE LINK] ${shareUrl}`, "sys-msg");
 
