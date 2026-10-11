@@ -1,0 +1,207 @@
+﻿<<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LightThreads - Terminal Private Session</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            background-color: #000000; 
+            color: #00ff66; 
+            font-family: 'Courier New', Courier, monospace; 
+            height: 100vh; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            padding: 20px;
+        }
+        #console-container { 
+            width: 100%; 
+            max-width: 760px; 
+            height: 85vh; 
+            border: 1px solid #00ff66; 
+            background: #050505; 
+            display: flex; 
+            flex-direction: column; 
+            padding: 16px; 
+            box-shadow: 0 0 15px rgba(0, 255, 102, 0.15);
+        }
+        #header { 
+            border-bottom: 1px dashed #00ff66; 
+            padding-bottom: 8px; 
+            margin-bottom: 12px; 
+            font-size: 0.85em;
+        }
+        #status { color: #ffcc00; margin-top: 4px; }
+        #session-controls {
+            margin-bottom: 12px;
+            display: flex;
+            gap: 10px;
+        }
+        #terminal-log { 
+            flex: 1; 
+            overflow-y: auto; 
+            margin-bottom: 12px; 
+            padding-right: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .log-entry { word-break: break-all; line-height: 1.4; }
+        .sys-msg { color: #0088ff; }
+        .user-msg { color: #00ff66; }
+        .err-msg { color: #ff3333; }
+        .input-row { 
+            display: flex; 
+            align-items: center; 
+            border-top: 1px solid #222; 
+            padding-top: 10px;
+        }
+        .prompt-symbol { color: #00ff66; margin-right: 8px; font-weight: bold; }
+        input { 
+            flex: 1; 
+            background: transparent; 
+            border: none; 
+            color: #00ff66; 
+            font-family: 'Courier New', Courier, monospace; 
+            font-size: 1em; 
+            outline: none; 
+        }
+        input:disabled { color: #444444; }
+        button { 
+            background: transparent; 
+            border: 1px solid #00ff66; 
+            color: #00ff66; 
+            font-family: 'Courier New', Courier, monospace; 
+            padding: 4px 12px; 
+            cursor: pointer; 
+        }
+        button:hover:not(:disabled) { background: #00ff66; color: #000; }
+        button:disabled { border-color: #444; color: #444; cursor: not-allowed; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+</head>
+<body>
+    <div id="console-container">
+        <div id="header">
+            <div>LIGHTTHREADS [Version 1.0.0-PRIVATE-SESSION]</div>
+            <div id="status">[SYSTEM] Initializing core engine...</div>
+        </div>
+        <div id="session-controls">
+            <button id="createSessionBtn">Create Session</button>
+            <span id="sessionInfo" style="font-size:0.85em; color:#aaa; align-self:center;"></span>
+        </div>
+        <div id="terminal-log"></div>
+        <div class="input-row">
+            <span class="prompt-symbol">&gt;</span>
+            <input type="text" id="messageInput" placeholder="Type message..." disabled autocomplete="off" />
+            <button id="sendBtn" disabled>SEND</button>
+        </div>
+    </div>
+
+    <script>
+        const statusDiv = document.getElementById("status");
+        const msgInput = document.getElementById("messageInput");
+        const sendBtn = document.getElementById("sendBtn");
+        const terminalLog = document.getElementById("terminal-log");
+        const createSessionBtn = document.getElementById("createSessionBtn");
+        const sessionInfo = document.getElementById("sessionInfo");
+
+        let currentSessionId = "";
+        let currentToken = "";
+        let currentRole = "Guest";
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlSession = urlParams.get("session");
+        const urlToken = urlParams.get("token");
+
+        function appendLog(text, className = "user-msg") {
+            const line = document.createElement("div");
+            line.className = `log-entry ${className}`;
+            line.innerHTML = text;
+            terminalLog.appendChild(line);
+            terminalLog.scrollTop = terminalLog.scrollHeight;
+        }
+
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl("/chat")
+            .withAutomaticReconnect()
+            .build();
+
+        connection.on("ReceiveMessage", (user, message) => {
+            appendLog(`[${escapeHtml(user)}] ${escapeHtml(message)}`, "user-msg");
+        });
+
+        connection.on("SystemError", (err) => {
+            appendLog(`[ERROR] ${escapeHtml(err)}`, "err-msg");
+        });
+
+        connection.start()
+            .then(() => {
+                statusDiv.innerText = "[SYSTEM] SignalR Connected. Awaiting session authentication.";
+                statusDiv.style.color = "#00ff66";
+
+                if (urlSession && urlToken) {
+                    currentSessionId = urlSession;
+                    currentToken = urlToken;
+                    currentRole = "Friend";
+                    joinActiveSession();
+                }
+            })
+            .catch(err => {
+                console.error(err);
+                statusDiv.innerText = "[ERROR] SignalR connection failed.";
+                statusDiv.style.color = "#ff3333";
+            });
+
+        createSessionBtn.addEventListener("click", async () => {
+            try {
+                const res = await fetch("/api/session/create", { method: "POST" });
+                const data = await res.json();
+                
+                currentSessionId = data.sessionId;
+                currentToken = data.token;
+                currentRole = "Host";
+
+                const shareUrl = `${window.location.origin}/?session=${currentSessionId}&token=${currentToken}`;
+                sessionInfo.innerText = `Room: ${currentSessionId}`;
+                
+                appendLog(`[SYSTEM] Session Created!`, "sys-msg");
+                appendLog(`[INVITE LINK] ${shareUrl}`, "sys-msg");
+
+                joinActiveSession();
+            } catch (err) {
+                appendLog(`[ERROR] Failed to create session.`, "err-msg");
+            }
+        });
+
+        function joinActiveSession() {
+            connection.invoke("JoinSession", currentSessionId, currentToken, currentRole)
+                .then(() => {
+                    statusDiv.innerText = `[SYSTEM] Authenticated in Room: ${currentSessionId} as ${currentRole}`;
+                    msgInput.disabled = false;
+                    sendBtn.disabled = false;
+                    createSessionBtn.disabled = true;
+                    msgInput.focus();
+                })
+                .catch(err => console.error(err));
+        }
+
+        function sendMessage() {
+            const msg = msgInput.value.trim();
+            if (msg && currentSessionId && currentToken) {
+                connection.invoke("SendGroupMessage", currentSessionId, currentToken, currentRole, msg)
+                    .catch(err => console.error(err));
+                msgInput.value = "";
+            }
+        }
+
+        sendBtn.addEventListener("click", sendMessage);
+        msgInput.addEventListener("keypress", (e) => { if (e.key === "Enter") sendMessage(); });
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+    </script>
+</body>
+</html>
