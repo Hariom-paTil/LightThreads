@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
@@ -22,7 +23,7 @@ app.MapGet("/", () =>
     return Results.Content(File.ReadAllText(htmlPath), "text/html");
 });
 
-// 2. PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404 NotFound
+// 2. PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404
 app.MapGet("/{pin}", (string pin, SessionStore store) =>
 {
     var session = store.GetByPin(pin);
@@ -46,14 +47,42 @@ app.MapPost("/api/session/create", (SessionStore store) =>
 app.MapHub<ChatHub>("/chat");
 
 // ---------------------------------------------------------
-// AUTOMATIC CLOUDFLARE TUNNEL LAUNCHER
+// AUTOMATIC CLOUDFLARE & BROWSER LAUNCHER
 // ---------------------------------------------------------
 app.Lifetime.ApplicationStarted.Register(() =>
 {
+    // 1. Open the local web page in the host's default browser
+    OpenBrowser("http://127.0.0.1:5080");
+
+    // 2. Start Cloudflare Tunnel in background
     Task.Run(() => StartCloudflareTunnel());
 });
 
 app.Run();
+
+// Cross-platform helper method to launch default web browser
+static void OpenBrowser(string url)
+{
+    try
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            Process.Start("xdg-open", url);
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            Process.Start("open", url);
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[BROWSER] Could not auto-open browser: {ex.Message}");
+    }
+}
 
 // Helper method to execute cloudflared and capture the public URL
 static void StartCloudflareTunnel()
@@ -62,9 +91,31 @@ static void StartCloudflareTunnel()
     Console.WriteLine("\n[LIGHTTHREADS] Starting Cloudflare Tunnel process...");
     Console.ResetColor();
 
+    string executablePath = "cloudflared"; // Default system PATH lookup
+
+    string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+    string[] candidatePaths = new[]
+    {
+        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "cloudflared.exe"),
+        Path.Combine(Directory.GetCurrentDirectory(), "cloudflared.exe"),
+        Path.Combine(programFiles, "cloudflared", "cloudflared.exe"),
+        Path.Combine(userProfile, @"AppData\Local\Microsoft\WinGet\Links\cloudflared.exe")
+    };
+
+    foreach (var path in candidatePaths)
+    {
+        if (File.Exists(path))
+        {
+            executablePath = path;
+            break;
+        }
+    }
+
     var processInfo = new ProcessStartInfo
     {
-        FileName = "cloudflared",
+        FileName = executablePath,
         Arguments = "tunnel --url http://127.0.0.1:5080",
         RedirectStandardError = true,
         RedirectStandardOutput = true,
@@ -80,7 +131,6 @@ static void StartCloudflareTunnel()
         {
             if (!string.IsNullOrEmpty(e.Data))
             {
-                // Scan cloudflared logs for trycloudflare.com URL
                 var match = Regex.Match(e.Data, @"https://[-a-zA-Z0-9@:%._\+~#=]{1,256}\.trycloudflare\.com");
                 if (match.Success)
                 {
@@ -102,8 +152,7 @@ static void StartCloudflareTunnel()
     catch (Exception ex)
     {
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"[ERROR] Could not launch cloudflared automatically: {ex.Message}");
-        Console.WriteLine("Ensure 'cloudflared' is installed and accessible in your system PATH.");
+        Console.WriteLine($"\n[ERROR] Could not launch cloudflared: {ex.Message}");
         Console.ResetColor();
     }
 }
