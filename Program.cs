@@ -4,100 +4,168 @@ using System.Security.Cryptography;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Bind strictly to local port 5080
+// Bind strictly to local port 5080
 builder.WebHost.UseUrls("http://127.0.0.1:5080");
 
-// 2. Add SignalR service
 builder.Services.AddSignalR();
-
-// 3. Register Session Store as a Singleton service
 builder.Services.AddSingleton<SessionStore>();
 
 var app = builder.Build();
 
-// 4. Serve index.html from disk
+// 1. Root route: Serve index.html for host session creation
 app.MapGet("/", () =>
 {
     var htmlPath = Path.Combine(app.Environment.ContentRootPath, "index.html");
-    if (!File.Exists(htmlPath))
-    {
-        return Results.NotFound("index.html file not found in project directory.");
-    }
+    if (!File.Exists(htmlPath)) return Results.NotFound();
     return Results.Content(File.ReadAllText(htmlPath), "text/html");
 });
 
-// 5. API endpoint for Host to generate a private invitation code
+// 2. PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404 NotFound
+app.MapGet("/{pin}", (string pin, SessionStore store) =>
+{
+    var session = store.GetByPin(pin);
+    if (session == null)
+    {
+        return Results.NotFound();
+    }
+
+    var htmlPath = Path.Combine(app.Environment.ContentRootPath, "index.html");
+    if (!File.Exists(htmlPath)) return Results.NotFound();
+    return Results.Content(File.ReadAllText(htmlPath), "text/html");
+});
+
+// API endpoint to create a new session
 app.MapPost("/api/session/create", (SessionStore store) =>
 {
     var session = store.CreateSession();
-    return Results.Ok(new { sessionId = session.Id, token = session.Token });
+    return Results.Ok(new { sessionId = session.Id, pin = session.CurrentPin });
 });
 
-// 6. Map SignalR Hub
 app.MapHub<ChatHub>("/chat");
 
-// 7. Execute Application
 app.Run();
 
 // =========================================================
-// TYPES & CLASS DECLARATIONS
+// TYPES & SESSION MANAGEMENT
 // =========================================================
 
-public record ChatSession(string Id, string Token, DateTime CreatedAtUtc, bool IsRevoked = false);
+public class ChatSession
+{
+    public string Id { get; }
+    public string CurrentPin { get; set; }
+    public string HostConnectionId { get; set; } = string.Empty;
+
+    public ChatSession(string id, string initialPin)
+    {
+        Id = id;
+        CurrentPin = initialPin;
+    }
+}
 
 public class SessionStore
 {
-    private readonly ConcurrentDictionary<string, ChatSession> _sessions = new();
+    private readonly ConcurrentDictionary<string, ChatSession> _sessionsById = new();
+    private readonly ConcurrentDictionary<string, ChatSession> _sessionsByPin = new();
 
     public ChatSession CreateSession()
     {
-        string sessionId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLower();
-        string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLower();
+        string sessionId = Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLower();
+        string pin = RandomNumberGenerator.GetInt32(100000, 999999).ToString();
 
-        var session = new ChatSession(sessionId, token, DateTime.UtcNow);
-        _sessions[sessionId] = session;
+        var session = new ChatSession(sessionId, pin);
+        _sessionsById[sessionId] = session;
+        _sessionsByPin[pin] = session;
         return session;
     }
 
-    public bool ValidateToken(string sessionId, string token)
+    public ChatSession? GetByPin(string pin)
     {
-        if (_sessions.TryGetValue(sessionId, out var session))
-        {
-            return !session.IsRevoked && session.Token == token;
-        }
-        return false;
+        _sessionsByPin.TryGetValue(pin, out var session);
+        return session;
+    }
+
+    public ChatSession? GetById(string sessionId)
+    {
+        _sessionsById.TryGetValue(sessionId, out var session);
+        return session;
+    }
+
+    public string RotatePin(ChatSession session)
+    {
+        _sessionsByPin.TryRemove(session.CurrentPin, out _);
+
+        string newPin = RandomNumberGenerator.GetInt32(100000, 999999).ToString();
+        session.CurrentPin = newPin;
+        _sessionsByPin[newPin] = session;
+
+        return newPin;
     }
 }
+
+// =========================================================
+// SIGNALR HUB WITH USERNAME TRACKING & URL ROTATION
+// =========================================================
 
 public class ChatHub : Hub
 {
     private readonly SessionStore _sessionStore;
+    private static readonly ConcurrentDictionary<string, (ChatSession Session, string GuestName)> PendingKnocks = new();
 
     public ChatHub(SessionStore sessionStore)
     {
         _sessionStore = sessionStore;
     }
 
-    public async Task JoinSession(string sessionId, string token, string username)
+    public async Task RegisterHostSession(string sessionId)
     {
-        if (!_sessionStore.ValidateToken(sessionId, token))
+        var session = _sessionStore.GetById(sessionId);
+        if (session != null)
         {
-            await Clients.Caller.SendAsync("SystemError", "Access Denied: Invalid or revoked session token.");
-            return;
+            session.HostConnectionId = Context.ConnectionId;
+            await Groups.AddToGroupAsync(Context.ConnectionId, session.Id);
         }
-
-        await Groups.AddToGroupAsync(Context.ConnectionId, sessionId);
-        await Clients.Group(sessionId).SendAsync("ReceiveMessage", "SYSTEM", $"{username} joined the session.");
     }
 
-    public async Task SendGroupMessage(string sessionId, string token, string user, string message)
+    public async Task KnockWithPin(string pin, string username)
     {
-        if (!_sessionStore.ValidateToken(sessionId, token))
+        var session = _sessionStore.GetByPin(pin);
+        if (session == null || string.IsNullOrEmpty(session.HostConnectionId))
         {
-            await Clients.Caller.SendAsync("SystemError", "Unauthorized message attempt.");
+            await Clients.Caller.SendAsync("SystemError", "Invalid or expired URL.");
             return;
         }
 
+        PendingKnocks[Context.ConnectionId] = (session, username);
+        await Clients.Client(session.HostConnectionId).SendAsync("PendingApprovalRequest", Context.ConnectionId, username, pin);
+    }
+
+    public async Task RespondToKnock(string guestConnectionId, bool approved)
+    {
+        if (!PendingKnocks.TryRemove(guestConnectionId, out var knockData))
+        {
+            return;
+        }
+
+        var session = knockData.Session;
+        var guestName = knockData.GuestName;
+
+        if (approved)
+        {
+            await Groups.AddToGroupAsync(guestConnectionId, session.Id);
+            await Clients.Client(guestConnectionId).SendAsync("JoinApproved", session.Id, session.CurrentPin);
+            await Clients.Group(session.Id).SendAsync("ReceiveMessage", "SYSTEM", $"{guestName} joined the session.");
+        }
+        else
+        {
+            await Clients.Client(guestConnectionId).SendAsync("JoinDenied");
+
+            string newPin = _sessionStore.RotatePin(session);
+            await Clients.Group(session.Id).SendAsync("ShiftUrlToNewPin", newPin);
+        }
+    }
+
+    public async Task SendGroupMessage(string sessionId, string user, string message)
+    {
         await Clients.Group(sessionId).SendAsync("ReceiveMessage", user, message);
     }
 }

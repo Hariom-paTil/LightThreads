@@ -49,6 +49,7 @@
             margin-bottom: 12px;
             display: flex;
             gap: 10px;
+            align-items: center;
         }
 
         #terminal-log {
@@ -78,6 +79,10 @@
             color: #ff3333;
         }
 
+        .warn-msg {
+            color: #ffcc00;
+        }
+
         .input-row {
             display: flex;
             align-items: center;
@@ -92,18 +97,28 @@
         }
 
         input {
-            flex: 1;
             background: transparent;
-            border: none;
+            border: 1px solid #333;
             color: #00ff66;
             font-family: 'Courier New', Courier, monospace;
-            font-size: 1em;
+            font-size: 0.9em;
+            padding: 4px 8px;
             outline: none;
         }
 
-            input:disabled {
-                color: #444444;
-            }
+        #usernameInput {
+            width: 140px;
+        }
+
+        #messageInput {
+            flex: 1;
+            border: none;
+        }
+
+        input:disabled {
+            color: #444444;
+            border-color: #222;
+        }
 
         button {
             background: transparent;
@@ -124,22 +139,42 @@
                 color: #444;
                 cursor: not-allowed;
             }
+
+        .action-btn {
+            margin-left: 8px;
+            padding: 2px 8px;
+            font-size: 0.8em;
+        }
+
+        .approve-btn {
+            border-color: #00ff66;
+            color: #00ff66;
+        }
+
+        .deny-btn {
+            border-color: #ff3333;
+            color: #ff3333;
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
 </head>
 <body>
     <div id="console-container">
         <div id="header">
-            <div>LIGHTTHREADS [Version 1.0.0-PRIVATE-SESSION]</div>
+            <div>LIGHTTHREADS [Version 1.4.0-CUSTOM-USERNAMES]</div>
             <div id="status">[SYSTEM] Initializing core engine...</div>
         </div>
+
         <div id="session-controls">
+            <input type="text" id="usernameInput" placeholder="Your Name" maxlength="15" autocomplete="off" />
             <button id="createSessionBtn">Create Session</button>
-            <span id="sessionInfo" style="font-size:0.85em; color:#aaa; align-self:center;"></span>
+            <span id="sessionInfo" style="font-size:0.85em; color:#aaa;"></span>
         </div>
+
         <div id="terminal-log"></div>
+
         <div class="input-row">
-            <span class="prompt-symbol">&gt;</span>
+            <span class="prompt-symbol" id="promptDisplay">&gt;</span>
             <input type="text" id="messageInput" placeholder="Type message..." disabled autocomplete="off" />
             <button id="sendBtn" disabled>SEND</button>
         </div>
@@ -152,14 +187,20 @@
         const terminalLog = document.getElementById("terminal-log");
         const createSessionBtn = document.getElementById("createSessionBtn");
         const sessionInfo = document.getElementById("sessionInfo");
+        const usernameInput = document.getElementById("usernameInput");
+        const promptDisplay = document.getElementById("promptDisplay");
 
         let currentSessionId = "";
-        let currentToken = "";
-        let currentRole = "Guest";
+        let currentUsername = "";
 
-        const urlParams = new URLSearchParams(window.location.search);
-        const urlSession = urlParams.get("session");
-        const urlToken = urlParams.get("token");
+        const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
+        const urlPin = pathSegments.length > 0 && pathSegments[0].length === 6 ? pathSegments[0] : null;
+
+        function getHandle() {
+            const entered = usernameInput.value.trim();
+            if (entered) return entered;
+            return urlPin ? "Guest" : "Host";
+        }
 
         function appendLog(text, className = "user-msg") {
             const line = document.createElement("div");
@@ -167,6 +208,7 @@
             line.innerHTML = text;
             terminalLog.appendChild(line);
             terminalLog.scrollTop = terminalLog.scrollHeight;
+            return line;
         }
 
         const connection = new signalR.HubConnectionBuilder()
@@ -182,61 +224,120 @@
             appendLog(`[ERROR] ${escapeHtml(err)}`, "err-msg");
         });
 
+        connection.on("PendingApprovalRequest", (guestConnectionId, guestName, pin) => {
+            const logItem = appendLog(`[KNOCK] User "${escapeHtml(guestName)}" trying to join with URL /${pin}. `, "warn-msg");
+
+            const acceptBtn = document.createElement("button");
+            acceptBtn.className = "action-btn approve-btn";
+            acceptBtn.innerText = "ACCEPT";
+
+            const denyBtn = document.createElement("button");
+            denyBtn.className = "action-btn deny-btn";
+            denyBtn.innerText = "DENY";
+
+            acceptBtn.onclick = () => {
+                connection.invoke("RespondToKnock", guestConnectionId, true);
+                logItem.innerHTML = `[ACCEPTED] User "${escapeHtml(guestName)}" admitted to chat.`;
+            };
+
+            denyBtn.onclick = () => {
+                connection.invoke("RespondToKnock", guestConnectionId, false);
+                logItem.innerHTML = `[DENIED] User "${escapeHtml(guestName)}" rejected. URL shifted!`;
+            };
+
+            logItem.appendChild(acceptBtn);
+            logItem.appendChild(denyBtn);
+        });
+
+        connection.on("ShiftUrlToNewPin", (newPin) => {
+            const newRelativePath = `/${newPin}`;
+            const fullNewUrl = `${window.location.origin}${newRelativePath}`;
+
+            window.history.replaceState({}, "", newRelativePath);
+
+            sessionInfo.innerText = `Active URL: ${newRelativePath}`;
+            appendLog(`[URL SHIFTED] Old URL invalidated. Browser updated to: ${fullNewUrl}`, "warn-msg");
+        });
+
+        connection.on("JoinApproved", (sessionId, pin) => {
+            currentSessionId = sessionId;
+            window.history.replaceState({}, "", `/${pin}`);
+
+            statusDiv.innerText = `[CONNECTED] Admitted into Room: ${sessionId} as ${currentUsername}`;
+            statusDiv.style.color = "#00ff66";
+            msgInput.disabled = false;
+            sendBtn.disabled = false;
+            usernameInput.disabled = true;
+            promptDisplay.innerText = `${currentUsername} >`;
+            msgInput.focus();
+        });
+
+        connection.on("JoinDenied", () => {
+            statusDiv.innerText = "[DENIED] Access denied by host.";
+            statusDiv.style.color = "#ff3333";
+            appendLog("[SYSTEM] Join request rejected. The URL you used is no longer valid.", "err-msg");
+        });
+
         connection.start()
             .then(() => {
-                statusDiv.innerText = "[SYSTEM] SignalR Connected. Awaiting session authentication.";
+                statusDiv.innerText = "[SYSTEM] SignalR Active.";
                 statusDiv.style.color = "#00ff66";
 
-                if (urlSession && urlToken) {
-                    currentSessionId = urlSession;
-                    currentToken = urlToken;
-                    currentRole = "Friend";
-                    joinActiveSession();
+                if (urlPin) {
+                    createSessionBtn.innerText = "Knock to Join";
+                    createSessionBtn.onclick = () => {
+                        currentUsername = getHandle();
+                        statusDiv.innerText = `[SYSTEM] Knocking on /${urlPin} as "${currentUsername}"... Waiting for host.`;
+                        statusDiv.style.color = "#ffcc00";
+                        createSessionBtn.disabled = true;
+                        usernameInput.disabled = true;
+                        connection.invoke("KnockWithPin", urlPin, currentUsername);
+                    };
                 }
             })
             .catch(err => {
                 console.error(err);
-                statusDiv.innerText = "[ERROR] SignalR connection failed.";
+                statusDiv.innerText = "[ERROR] Connection failed.";
                 statusDiv.style.color = "#ff3333";
             });
 
         createSessionBtn.addEventListener("click", async () => {
+            if (urlPin) return; // Handled by knock handler above
+
             try {
+                currentUsername = getHandle();
                 const res = await fetch("/api/session/create", { method: "POST" });
                 const data = await res.json();
 
                 currentSessionId = data.sessionId;
-                currentToken = data.token;
-                currentRole = "Host";
 
-                const shareUrl = `${window.location.origin}/?session=${currentSessionId}&token=${currentToken}`;
-                sessionInfo.innerText = `Room: ${currentSessionId}`;
+                const relativePath = `/${data.pin}`;
+                const shareUrl = `${window.location.origin}${relativePath}`;
+
+                window.history.replaceState({}, "", relativePath);
+                sessionInfo.innerText = `Active URL: ${relativePath}`;
 
                 appendLog(`[SYSTEM] Session Created!`, "sys-msg");
-                appendLog(`[INVITE LINK] ${shareUrl}`, "sys-msg");
+                appendLog(`[SHARE URL] ${shareUrl}`, "sys-msg");
 
-                joinActiveSession();
+                connection.invoke("RegisterHostSession", currentSessionId)
+                    .then(() => {
+                        statusDiv.innerText = `[HOSTING as ${currentUsername}] Listening on ${relativePath}`;
+                        createSessionBtn.disabled = true;
+                        usernameInput.disabled = true;
+                        msgInput.disabled = false;
+                        sendBtn.disabled = false;
+                        promptDisplay.innerText = `${currentUsername} >`;
+                    });
             } catch (err) {
                 appendLog(`[ERROR] Failed to create session.`, "err-msg");
             }
         });
 
-        function joinActiveSession() {
-            connection.invoke("JoinSession", currentSessionId, currentToken, currentRole)
-                .then(() => {
-                    statusDiv.innerText = `[SYSTEM] Authenticated in Room: ${currentSessionId} as ${currentRole}`;
-                    msgInput.disabled = false;
-                    sendBtn.disabled = false;
-                    createSessionBtn.disabled = true;
-                    msgInput.focus();
-                })
-                .catch(err => console.error(err));
-        }
-
         function sendMessage() {
             const msg = msgInput.value.trim();
-            if (msg && currentSessionId && currentToken) {
-                connection.invoke("SendGroupMessage", currentSessionId, currentToken, currentRole, msg)
+            if (msg && currentSessionId) {
+                connection.invoke("SendGroupMessage", currentSessionId, currentUsername, msg)
                     .catch(err => console.error(err));
                 msgInput.value = "";
             }
