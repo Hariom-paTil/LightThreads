@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -43,7 +45,68 @@ app.MapPost("/api/session/create", (SessionStore store) =>
 
 app.MapHub<ChatHub>("/chat");
 
+// ---------------------------------------------------------
+// AUTOMATIC CLOUDFLARE TUNNEL LAUNCHER
+// ---------------------------------------------------------
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    Task.Run(() => StartCloudflareTunnel());
+});
+
 app.Run();
+
+// Helper method to execute cloudflared and capture the public URL
+static void StartCloudflareTunnel()
+{
+    Console.ForegroundColor = ConsoleColor.Yellow;
+    Console.WriteLine("\n[LIGHTTHREADS] Starting Cloudflare Tunnel process...");
+    Console.ResetColor();
+
+    var processInfo = new ProcessStartInfo
+    {
+        FileName = "cloudflared",
+        Arguments = "tunnel --url http://127.0.0.1:5080",
+        RedirectStandardError = true,
+        RedirectStandardOutput = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+
+    try
+    {
+        var process = new Process { StartInfo = processInfo };
+
+        process.ErrorDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+            {
+                // Scan cloudflared logs for trycloudflare.com URL
+                var match = Regex.Match(e.Data, @"https://[-a-zA-Z0-9@:%._\+~#=]{1,256}\.trycloudflare\.com");
+                if (match.Success)
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("\n=========================================================");
+                    Console.WriteLine($" [PUBLIC HTTPS URL ACTIVE]");
+                    Console.WriteLine($" {match.Value}");
+                    Console.WriteLine(" Share this public address with your friend anywhere in the world!");
+                    Console.WriteLine("=========================================================\n");
+                    Console.ResetColor();
+                }
+            }
+        };
+
+        process.Start();
+        process.BeginErrorReadLine();
+        process.BeginOutputReadLine();
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"[ERROR] Could not launch cloudflared automatically: {ex.Message}");
+        Console.WriteLine("Ensure 'cloudflared' is installed and accessible in your system PATH.");
+        Console.ResetColor();
+    }
+}
 
 // =========================================================
 // TYPES & SESSION MANAGEMENT
