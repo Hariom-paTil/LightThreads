@@ -1,9 +1,9 @@
 ﻿// =========================================================
-// LIGHTTHREADS - CLIENT-SIDE AES-GCM 256-BIT ENCRYPTION
+// LIGHTTHREADS - HARDENED CLIENT AES-GCM 256-BIT ENCRYPTION
 // =========================================================
 
 class LightEncryption {
-    // Generate an ephemeral 256-bit AES-GCM key from session PIN/Token
+    // Derive AES-GCM key using PBKDF2 with dynamic room-bound salt
     static async deriveKey(secretPin) {
         const enc = new TextEncoder();
         const keyMaterial = await window.crypto.subtle.importKey(
@@ -14,10 +14,13 @@ class LightEncryption {
             ["deriveBits", "deriveKey"]
         );
 
+        // Dynamic room-bound salt
+        const dynamicSalt = enc.encode(`LightThreadsSalt_${secretPin}_2026`);
+
         return window.crypto.subtle.deriveKey(
             {
                 name: "PBKDF2",
-                salt: enc.encode("LightThreadsSalt2026"),
+                salt: dynamicSalt,
                 iterations: 100000,
                 hash: "SHA-256"
             },
@@ -28,7 +31,6 @@ class LightEncryption {
         );
     }
 
-    // Encrypt plaintext string into base64 payload
     static async encryptMessage(plaintext, secretPin) {
         try {
             const key = await LightEncryption.deriveKey(secretPin);
@@ -41,7 +43,6 @@ class LightEncryption {
                 enc.encode(plaintext)
             );
 
-            // Combine IV and Ciphertext for transport
             const combined = new Uint8Array(iv.length + ciphertext.byteLength);
             combined.set(iv, 0);
             combined.set(new Uint8Array(ciphertext), iv.length);
@@ -49,11 +50,10 @@ class LightEncryption {
             return btoa(String.fromCharCode.apply(null, combined));
         } catch (e) {
             console.error("Encryption failed:", e);
-            return plaintext; // Fallback
+            return plaintext;
         }
     }
 
-    // Decrypt base64 payload into plaintext string
     static async decryptMessage(cipherBase64, secretPin) {
         try {
             const key = await LightEncryption.deriveKey(secretPin);

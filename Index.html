@@ -162,7 +162,7 @@
 <body>
     <div id="console-container">
         <div id="header">
-            <div>LIGHTTHREADS [Version 1.5.0-E2E-AES-256]</div>
+            <div>LIGHTTHREADS [Version 1.6.0-HARDENED-E2E]</div>
             <div id="status">[SYSTEM] Initializing core engine...</div>
         </div>
 
@@ -194,6 +194,7 @@
         let currentSessionId = "";
         let currentUsername = "";
         let activePin = "";
+        const MAX_LOG_ITEMS = 50; // Purge old DOM logs to protect RAM memory
 
         const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
         const urlPin = pathSegments.length > 0 && pathSegments[0].length === 6 ? pathSegments[0] : null;
@@ -209,6 +210,12 @@
             line.className = `log-entry ${className}`;
             line.innerHTML = text;
             terminalLog.appendChild(line);
+
+            // Auto-purge oldest log entries if DOM buffer exceeds threshold
+            while (terminalLog.children.length > MAX_LOG_ITEMS) {
+                terminalLog.removeChild(terminalLog.firstChild);
+            }
+
             terminalLog.scrollTop = terminalLog.scrollHeight;
             return line;
         }
@@ -218,7 +225,6 @@
             .withAutomaticReconnect()
             .build();
 
-        // Decrypt incoming message
         connection.on("ReceiveMessage", async (user, encryptedMessage) => {
             if (user === "SYSTEM") {
                 appendLog(`[SYSTEM] ${escapeHtml(encryptedMessage)}`, "sys-msg");
@@ -258,17 +264,13 @@
         });
 
         connection.on("ShiftUrlToNewPin", (newPin) => {
-            activePin = newPin; // Update active encryption secret
+            activePin = newPin;
             const newRelativePath = `/${newPin}`;
             const fullNewUrl = `${window.location.origin}${newRelativePath}`;
 
-            // Update browser address bar
             window.history.replaceState({}, "", newRelativePath);
 
-            // Update active URL status in UI header
             sessionInfo.innerText = `Active URL: ${newRelativePath}`;
-
-            // Print the newly rotated public share link in the terminal log
             appendLog(`[URL SHIFTED] Old URL invalidated.`, "warn-msg");
             appendLog(`[NEW SHARE URL] ${fullNewUrl}`, "sys-msg");
         });
@@ -278,7 +280,7 @@
             activePin = pin;
             window.history.replaceState({}, "", `/${pin}`);
 
-            statusDiv.innerText = `[CONNECTED - E2E ENCRYPTED] Room: ${sessionId} as ${currentUsername}`;
+            statusDiv.innerText = `[CONNECTED - HARDENED E2E] Room: ${sessionId} as ${currentUsername}`;
             statusDiv.style.color = "#00ff66";
             msgInput.disabled = false;
             sendBtn.disabled = false;
@@ -338,7 +340,7 @@
 
                 connection.invoke("RegisterHostSession", currentSessionId)
                     .then(() => {
-                        statusDiv.innerText = `[HOSTING - E2E ENCRYPTED as ${currentUsername}] Listening on ${relativePath}`;
+                        statusDiv.innerText = `[HOSTING - HARDENED E2E as ${currentUsername}] Listening on ${relativePath}`;
                         createSessionBtn.disabled = true;
                         usernameInput.disabled = true;
                         msgInput.disabled = false;
@@ -350,7 +352,6 @@
             }
         });
 
-        // Encrypt outgoing message
         async function sendMessage() {
             const msg = msgInput.value.trim();
             if (msg && currentSessionId && activePin) {

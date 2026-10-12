@@ -1,21 +1,59 @@
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Bind strictly to local port 5080
 builder.WebHost.UseUrls("http://127.0.0.1:5080");
 
-builder.Services.AddSignalR();
+// 1. Hardened SignalR payload limit (10 KB max)
+builder.Services.AddSignalR(options =>
+{
+    options.MaximumReceiveMessageSize = 10 * 1024;
+});
+
 builder.Services.AddSingleton<SessionStore>();
+
+// 2. IP-based Rate Limiting (Anti-Brute Force)
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+    {
+        string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: clientIp,
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0
+            });
+    });
+});
 
 var app = builder.Build();
 
-// 1. Serve encryption.js file
+app.UseRateLimiter();
+
+// 3. Strict Security Headers Middleware
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline';");
+    context.Response.Headers.Append("X-Frame-Options", "DENY");
+    context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.Append("Referrer-Policy", "no-referrer");
+    await next();
+});
+
+// Serve encryption.js file
 app.MapGet("/encryption.js", () =>
 {
     var jsPath = Path.Combine(app.Environment.ContentRootPath, "encryption.js");
@@ -23,7 +61,7 @@ app.MapGet("/encryption.js", () =>
     return Results.Content(File.ReadAllText(jsPath), "application/javascript");
 });
 
-// 2. Root route: Serve index.html for host session creation
+// Root route: Serve index.html
 app.MapGet("/", () =>
 {
     var htmlPath = Path.Combine(app.Environment.ContentRootPath, "index.html");
@@ -31,7 +69,7 @@ app.MapGet("/", () =>
     return Results.Content(File.ReadAllText(htmlPath), "text/html");
 });
 
-// 3. PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404
+// PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404
 app.MapGet("/{pin}", (string pin, SessionStore store) =>
 {
     var session = store.GetByPin(pin);
@@ -54,18 +92,13 @@ app.MapPost("/api/session/create", (SessionStore store) =>
 
 app.MapHub<ChatHub>("/chat");
 
-// ---------------------------------------------------------
-// AUTOMATIC CLOUDFLARE TUNNEL & PUBLIC BROWSER LAUNCHER
-// ---------------------------------------------------------
 app.Lifetime.ApplicationStarted.Register(() =>
 {
-    // Start Cloudflare Tunnel and pass true to automatically launch public URL in browser
     Task.Run(() => StartCloudflareTunnel(autoOpenBrowser: true));
 });
 
 app.Run();
 
-// Cross-platform helper method to launch default web browser
 static void OpenBrowser(string url)
 {
     try
@@ -89,14 +122,13 @@ static void OpenBrowser(string url)
     }
 }
 
-// Helper method to execute cloudflared, capture public URL, and launch browser
 static void StartCloudflareTunnel(bool autoOpenBrowser)
 {
     Console.ForegroundColor = ConsoleColor.Yellow;
     Console.WriteLine("\n[LIGHTTHREADS] Starting Cloudflare Tunnel process...");
     Console.ResetColor();
 
-    string executablePath = "cloudflared"; // Default system PATH lookup
+    string executablePath = "cloudflared";
 
     string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
@@ -153,7 +185,6 @@ static void StartCloudflareTunnel(bool autoOpenBrowser)
 
                     if (autoOpenBrowser)
                     {
-                        // Wait 3 seconds for DNS propagation before launching browser
                         Task.Delay(3000).ContinueWith(_ => OpenBrowser(publicUrl));
                     }
                 }
@@ -176,9 +207,6 @@ static void StartCloudflareTunnel(bool autoOpenBrowser)
         }
     }
 }
-// =========================================================
-// TYPES & SESSION MANAGEMENT
-// =========================================================
 
 public class ChatSession
 {
@@ -232,10 +260,6 @@ public class SessionStore
         return newPin;
     }
 }
-
-// =========================================================
-// SIGNALR HUB WITH USERNAME TRACKING & URL ROTATION
-// =========================================================
 
 public class ChatHub : Hub
 {
@@ -297,6 +321,8 @@ public class ChatHub : Hub
 
     public async Task SendGroupMessage(string sessionId, string user, string message)
     {
+        // Enforce max server-side length check
+        if (message.Length > 2048) return;
         await Clients.Group(sessionId).SendAsync("ReceiveMessage", user, message);
     }
 }
