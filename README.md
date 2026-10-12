@@ -1,301 +1,351 @@
 # LightThreads
 
-LightThreads is an open-source, peer-to-host communication application built with .NET 9, ASP.NET Core Minimal APIs, and SignalR. It allows users to host temporary chat sessions on their own computers and invite others to join through a shareable URL.
+![.NET](https://img.shields.io/badge/.NET-8%2F9-512BD4?logo=dotnet&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows&logoColor=white)
+![Security](https://img.shields.io/badge/Encryption-AES--256--GCM-2E8B57)
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
-Guests can open the invitation link in a browser without installing any additional software. Cloudflare Tunnel provides public HTTPS access to the locally running application without requiring manual port forwarding.
+**Ultra-lightweight, zero-trace, end-to-end encrypted private chat engine built with ASP.NET Core SignalR and the Web Crypto API.**
 
-## Project Status
+LightThreads is a disposable 1-on-1 messaging application that lets a host establish a private chat session and invite a remote guest through a shareable HTTPS URL. It combines browser-side encryption, an in-memory SignalR relay, automated Cloudflare tunneling, and host-controlled access without requiring guests to install a client application.
 
-LightThreads is currently under active development.
+The goal is simple: communicate privately, avoid persistent server-side chat history, and keep session state temporary.
 
-The current implementation includes real-time messaging, host-controlled guest approval, dynamic room routing, and Cloudflare Tunnel integration. Rate limiting, end-to-end encryption, and file sharing are planned for future releases.
+## Overview
+
+LightThreads turns the host's Windows machine into a temporary communication endpoint. The host launches the application, establishes a public HTTPS tunnel, and shares the generated invitation URL with a guest. The guest opens the URL in a browser, requests access, and waits for host approval.
+
+Messages are encrypted in the browser before being transmitted. The server relays encrypted payloads between connected clients without needing the plaintext message or encryption key.
+
+### Design Principles
+
+- **Client-side encryption:** Message encryption and decryption happen in the browser.
+- **Zero message persistence:** Chat messages are not intentionally stored in a database or written to application log files.
+- **Temporary sessions:** Active rooms and session state exist in memory and disappear when the application stops or clears the session.
+- **Host-controlled access:** Guests require host approval before joining a session.
+- **Simple deployment:** Run the published Windows application or build from source.
+- **Public HTTPS access:** Cloudflare Tunnel exposes the local application without manual port forwarding.
 
 ## Features
 
-- **Temporary messaging:** Messages are stored in application memory rather than a database. Chat history is not designed to persist after the relevant in-memory state is cleared.
-- **Self-hosted application:** The host runs the application on their own computer without maintaining a dedicated application server.
-- **Remote access:** Guests can connect from different networks using a public HTTPS URL.
-- **Waiting room:** New guests must be approved by the host before joining a chat session.
-- **Dynamic invitation routes:** The application can replace an invitation route after a guest request is rejected.
-- **Route protection:** Invalid or revoked room routes return HTTP 404 responses.
-- **Cloudflare Tunnel integration:** The application can launch the Cloudflare Tunnel client to expose the local server.
-- **Browser-based interface:** The client uses HTML, CSS, and JavaScript and does not require a separate client installation.
-- **Real-time communication:** SignalR handles messaging and live session events.
+| Feature | Implementation | Purpose |
+|---|---|---|
+| End-to-End Encryption | AES-256-GCM with Web Crypto API | Encrypt messages in the browser |
+| Key Derivation | PBKDF2 with room-bound salt | Derive encryption keys locally |
+| Real-Time Messaging | ASP.NET Core SignalR | Relay messages between connected browsers |
+| In-Memory Sessions | `ConcurrentDictionary` | Manage temporary room and session state |
+| Public HTTPS Access | Cloudflare Tunnel | Expose the local application |
+| Host Waiting Room | Knock and approval workflow | Require host authorization |
+| Dynamic Session Rotation | New URL and PIN after rejection | Invalidate the previous invitation route |
+| Cloaked Routes | HTTP 404 for invalid or revoked PIN routes | Avoid revealing route validity through distinct error responses |
+| Rate Limiting | 15 requests per minute per IP | Reduce request abuse |
+| SignalR Payload Limits | 10 KB maximum payload | Restrict oversized messages |
+| Browser Log Cleanup | Maximum 50 displayed entries | Limit retained chat history in the interface |
+| Content Security Policy | Strict CSP headers | Restrict unsafe browser resource execution |
+| Client IP Extraction | Cloudflare `CF-Connecting-IP` | Identify the original client IP behind a trusted proxy |
 
-## Architecture
+## Architecture and Data Flow
 
-LightThreads follows a peer-to-host architecture. The host runs the application locally, while remote guests connect through Cloudflare's network.
+LightThreads uses a relay-based architecture. Clients exchange encrypted message payloads through SignalR, while encryption keys are intended to remain on the client side.
 
 ```text
-Host Computer
-    |
-    |-- Host Browser
-    |
-    |-- ASP.NET Core Application
-    |       |
-    |       |-- Minimal API endpoints
-    |       |-- SignalR Hub
-    |       |-- Session Store
-    |
-    |-- Cloudflare Tunnel Client
-                |
-                v
-         Cloudflare Network
-                |
-                | HTTPS / WebSocket
-                v
-           Guest Browser
++---------------------------+
+|         Client A          |
+|      Browser / Web UI     |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Web Crypto API            |
+| AES-256-GCM Encryption    |
+| PBKDF2 Key Derivation     |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Encrypted Payload         |
+| Base64-Encoded Ciphertext |
++-------------+-------------+
+              |
+              v
++---------------------------+
+|     Cloudflare Tunnel     |
+|       Public HTTPS        |
++-------------+-------------+
+              |
+              v
++---------------------------+
+|   ASP.NET Core Server     |
+|       SignalR Relay       |
+|  In-Memory Session State  |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Encrypted Payload         |
+| Base64-Encoded Ciphertext |
++-------------+-------------+
+              |
+              v
++---------------------------+
+|         Client B          |
+| Web Crypto API Decryption |
++-------------+-------------+
+              |
+              v
++---------------------------+
+|      Plaintext Message    |
+|     Rendered in Browser   |
++---------------------------+
 ```
 
-The application server runs on the host's computer. Cloudflare Tunnel provides the connection between the public URL and the local application.
+### Message Flow
 
-### Communication Flow
+1. The sender composes a message in the browser.
+2. The Web Crypto API encrypts the message using an AES-256-GCM key derived locally.
+3. The ciphertext is encoded as Base64 for transport.
+4. Cloudflare Tunnel forwards the HTTPS connection to the local ASP.NET Core application.
+5. SignalR relays the encrypted payload to the authorized recipient.
+6. The recipient decrypts the payload in their browser and renders the message.
+7. The server handles routing and connection state without needing access to plaintext messages.
 
-1. The host starts LightThreads.
-2. ASP.NET Core starts the local web server.
-3. The application launches Cloudflare Tunnel.
-4. A public HTTPS URL is displayed in the terminal.
-5. The host opens the application and creates a chat session.
-6. The host shares the invitation URL with a guest.
-7. The guest opens the link and requests access.
-8. The host approves or rejects the request.
-9. Approved guests can exchange messages through SignalR.
+Base64 is an encoding format, not encryption. Confidentiality comes from AES-GCM.
 
-This is not a direct peer-to-peer connection. Messages are handled by the application running on the host's computer, and remote traffic passes through Cloudflare infrastructure.
+## Session Lifecycle and Knock Flow
 
-## Waiting Room and Invitation Management
+Every session is controlled by the host. A guest must request access before joining the chat.
 
-LightThreads includes a waiting room that allows the host to control who can enter a session.
+```text
++---------------------------+
+| Host launches application |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Create session and PIN    |
+| Start public HTTPS tunnel |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Share invitation URL     |
+| and required secret      |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Guest opens invitation    |
+| and requests access       |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Guest enters waiting room |
+|       (Knock request)     |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| Host reviews request      |
++-------------+-------------+
+              |
+        +-----+-----+
+        |           |
+        v           v
++---------------+  +--------------------+
+|    APPROVE    |  |       DENY         |
++-------+-------+  +---------+----------+
+        |                    |
+        v                    v
++---------------+  +--------------------+
+| Authorize     |  | Revoke active PIN  |
+| guest session |  | route and rotate   |
++-------+-------+  | URL and secret     |
+        |          +---------+----------+
+        v                    |
++---------------+            v
+| Encrypted     |  +--------------------+
+| chat begins   |  | Old route returns  |
++---------------+  | HTTP 404           |
+                   +--------------------+
+```
 
-The intended workflow is:
+The rejection workflow is designed to invalidate the previous invitation route and rotate the active URL and secret. A new invitation must be shared with any participant who needs access to the replacement session.
 
-1. A host creates a session and receives an invitation URL.
-2. A guest opens the URL and requests access.
-3. The application notifies the host about the pending request.
-4. The host decides whether to accept or reject the guest.
-5. Accepted guests can join the authorized session.
-6. When a request is rejected, the application can revoke the previous invitation route and generate a replacement.
+## Quick Start / Downloads
 
-The implementation is intended to preserve existing conversations when an invitation route changes. Actual behavior depends on the current session and routing implementation.
+### Option A: Download for Windows
 
-Returning HTTP 404 for an invalid route helps conceal unavailable sessions, but it does not replace server-side authorization.
+**Recommended for users who want to run LightThreads without building from source.**
 
-## Security
+1. Open the project's GitHub repository.
+2. Download `LightThreadsApplication.zip` from the repository's available download or release section.
+3. Extract the ZIP file to a folder on your Windows PC.
+4. Open the extracted `LightThreadsApplication` folder.
+5. Run `LightThreads.exe`.
+6. Follow the application instructions to create a session and obtain the public HTTPS invitation URL.
+7. Share the invitation details with your guest.
+8. Approve the guest's connection request when it appears.
 
-Security is an important part of the project, but LightThreads is still under development and has not been presented as an independently audited messaging platform.
+No .NET SDK is required when using the self-contained published application. Ensure any required dependencies, including `cloudflared` if it is not bundled, are available.
 
-### Current Security Measures
+### Option B: Build from Source
 
-| Mechanism | Purpose |
-| --- | --- |
-| Cryptographically secure random number generation | Generate unpredictable invitation codes |
-| Safe DOM rendering and input escaping | Reduce the risk of cross-site scripting |
-| HTTPS and WSS | Protect data in transit |
-| Route revocation | Reject requests to revoked invitation routes |
-| In-memory session storage | Avoid storing chat history in a database |
+**Requirements:**
 
-### Current Limitations
+- Git
+- A compatible .NET SDK matching the project's target framework
+- Windows for the documented deployment workflow
+- Cloudflare Tunnel (`cloudflared`) available to the application, unless bundled with the project
 
-**End-to-end encryption is not implemented yet.**
-
-HTTPS and WebSocket Secure protect communication in transit, but they do not provide end-to-end encryption. The application and infrastructure handling the traffic may still be able to access message contents.
-
-**Rate limiting is planned.**
-
-Short invitation codes can be vulnerable to repeated guessing attempts. Rate limiting and additional abuse protection should be implemented before exposing the application to unrestricted public use.
-
-**Route secrecy is not authorization.**
-
-An unpredictable invitation URL can make casual discovery more difficult, but every protected operation must still verify that the requesting connection is authorized.
-
-**Temporary storage does not guarantee complete data removal.**
-
-Messages are not intended to be stored persistently by the application. However, operating-system artifacts, diagnostic logs, browser data, or network metadata may remain depending on the environment and configuration.
-
-**Cloudflare is part of the trust boundary.**
-
-The current architecture relies on Cloudflare for public connectivity. It does not guarantee that message contents are hidden from every intermediary.
-
-These limitations will be considered as the project develops.
-
-## Technology Stack
-
-| Technology | Purpose |
-| --- | --- |
-| C# | Application development |
-| .NET 9 | Runtime and framework |
-| ASP.NET Core Minimal APIs | HTTP endpoints and routing |
-| SignalR | Real-time messaging |
-| HTML5 | Web interface |
-| CSS | Interface styling |
-| JavaScript | Client-side behavior and SignalR communication |
-| Cloudflare Tunnel | Public access to the local application |
-| Web Crypto API | Planned client-side encryption |
-
-## Prerequisites
-
-Before running the project, install the following:
-
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-- [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-- A modern web browser
-- An active internet connection
-
-The `cloudflared` executable must be available in the project directory or through the system PATH, depending on the current launcher implementation.
-
-The project currently targets .NET 9. Check the official .NET support policy when choosing a runtime for long-term use.
-
-## Getting Started
-
-### 1. Clone the Repository
-
-Replace `your-username` with the GitHub username or organization that owns the repository.
+#### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/LightThreads.git
+git clone <YOUR_REPOSITORY_URL>
 cd LightThreads
 ```
 
-### 2. Restore Dependencies
+Replace `<YOUR_REPOSITORY_URL>` with your actual repository URL.
+
+#### 2. Restore dependencies
 
 ```bash
 dotnet restore
 ```
 
-### 3. Run the Application
+#### 3. Run the application
 
 ```bash
 dotnet run
 ```
 
-### 4. Open the Application
+The default application port is `5080`, unless overridden by the project configuration.
 
-When configured correctly, the local application should be available at:
+Follow the application output and instructions to obtain the local endpoint and public HTTPS URL.
+
+## Security and Threat Model
+
+LightThreads is designed to minimize server-side exposure of chat content. Its security depends on correct browser-side cryptography, safe secret distribution, access-control enforcement, and deployment configuration.
+
+### Security Specifications
+
+| Area | Specification | Security Objective |
+|---|---|---|
+| Message Encryption | AES-256-GCM | Confidentiality and authenticated encryption |
+| Key Derivation | PBKDF2 with room-bound salt | Derive keys locally from the shared secret |
+| Transport | HTTPS through Cloudflare Tunnel | Protect network traffic in transit |
+| Message Storage | In-memory relay; no intentional persistent message storage | Avoid retaining chat history on the server |
+| Session State | In-memory `ConcurrentDictionary` | Keep active room state temporary |
+| Route Invalidation | PIN revocation and rotation | Invalidate old invitation routes |
+| Invalid PIN Handling | HTTP 404 | Avoid distinguishing invalid routes through separate status responses |
+| Request Throttling | 15 requests per minute per IP | Reduce excessive requests |
+| SignalR Payload Limit | 10 KB | Restrict oversized payloads |
+| Browser UI History | Maximum 50 displayed entries | Limit client-side displayed history |
+| Browser Resource Policy | Strict Content Security Policy | Reduce exposure to script injection and unauthorized resource loading |
+| Client IP Handling | `CF-Connecting-IP` behind Cloudflare | Identify the originating IP when the proxy is trusted |
+
+### Threat Model
+
+| Threat | Mitigation | Limitations |
+|---|---|---|
+| Network interception | HTTPS and client-side encryption | Does not protect compromised endpoints |
+| Server reading messages | Client-side AES-GCM encryption | Depends on correct key handling and trustworthy client code |
+| Unauthorized guest access | Host approval and session routing | Must be enforced server-side, not only in the UI |
+| Reuse of a rejected invitation | PIN revocation and route rotation | Existing connections must also be invalidated |
+| Excessive requests | IP-based rate limiting | Distributed abuse may require additional controls |
+| Oversized SignalR messages | Payload limits | Does not replace application-level validation |
+| Persistent message leakage | No intentional message logging or database storage | Proxy, crash, operating system, or hosting logs may still retain metadata |
+| Malicious browser content | CSP and safe DOM rendering | CSP and rendering practices require review |
+| Compromised host or guest | No complete application-level mitigation | An endpoint can capture plaintext, keys, or screenshots |
+| Weak shared secret | PBKDF2 key derivation | A six-digit PIN remains susceptible to guessing |
+
+### Cryptographic Details
+
+LightThreads uses a room-bound salt with the format:
 
 ```text
-http://127.0.0.1:5080
+LightThreadsSalt_{PIN}_2026
 ```
 
-The application also launches Cloudflare Tunnel and displays a public URL in the terminal.
+PBKDF2 derives an encryption key locally, and AES-256-GCM encrypts message content before transmission.
 
-Example terminal output:
+For a production security review, verify the following:
 
-```text
-=========================================================
-                    LIGHTTHREADS
-=========================================================
+- Use a cryptographically secure random number generator for session secrets, salts where appropriate, and AES-GCM nonces.
+- Never reuse an AES-GCM nonce with the same key.
+- Use a sufficiently high PBKDF2 iteration count and a supported cryptographic hash such as SHA-256.
+- Treat a six-digit PIN as a short-lived routing identifier, not as a high-entropy encryption key.
+- Keep the encryption secret separate from the public invitation URL wherever possible.
+- Ensure session revocation terminates or invalidates existing authorized connections, not just new HTTP requests.
+- Avoid placing secrets in URLs, application logs, analytics, or error reports.
+- Use a strict Content Security Policy and safe DOM APIs to prevent untrusted message content from executing as HTML or script.
 
-Local Application:
-http://127.0.0.1:5080
+**Important:** Client-side encryption is not automatically equivalent to a fully verified end-to-end encryption protocol. A production audit should confirm that the server cannot replace client code to capture keys, that key distribution is secure, and that participants connect to the intended session.
 
-Public HTTPS URL:
-https://example.trycloudflare.com
+### Privacy Boundaries
 
-Open the application and create a chat session.
-Share the invitation URL with your guest.
+LightThreads does not intentionally store chat messages in a database or write message history to disk. However, zero application-level persistence does not guarantee that every component leaves zero traces.
 
-=========================================================
-```
+- The operating system may retain executable, process, or network metadata.
+- Cloudflare and other network infrastructure may process connection metadata according to their configurations and policies.
+- Browser memory, extensions, screenshots, and developer tools may expose messages.
+- A host or guest can manually copy or record message content.
+- Unexpected process termination clears in-memory server state but may not erase all traces from the operating system or connected infrastructure.
 
-The public URL shown above is only an example. Your actual URL will depend on the tunnel configuration.
+LightThreads is therefore best described as a **non-persistent, client-encrypted messaging application**, not a guarantee of complete anonymity or forensic untraceability.
 
-### 5. Create a Chat Session
+## Technology Stack
 
-1. Open the local application in your browser.
-2. Enter your display name.
-3. Select Create Session.
-4. Copy the generated invitation URL.
-5. Share the link with your guest.
-6. Approve the guest through the waiting room.
-7. Start chatting.
+| Component | Technology | Responsibility |
+|---|---|---|
+| Backend | C# and ASP.NET Core | HTTP endpoints, session lifecycle, and request handling |
+| Real-Time Communication | ASP.NET Core SignalR | Connection management and message relay |
+| Session Storage | `ConcurrentDictionary` | In-memory room and session state |
+| Client-Side Cryptography | Web Crypto API | Local key derivation, encryption, and decryption |
+| Encryption | AES-256-GCM | Authenticated message encryption |
+| Key Derivation | PBKDF2 | Local derivation of cryptographic keys |
+| Public Connectivity | Cloudflare Tunnel (`cloudflared`) | HTTPS access to the host's local application |
+| Deployment | Self-contained Windows application | Simplified distribution without requiring a .NET SDK |
 
-The guest only needs a compatible browser and an internet connection.
+## Configuration and Operational Notes
 
-## Project Structure
+### Port Configuration
 
-```text
-LightThreads/
-|
-|-- Program.cs
-|   |-- ASP.NET Core Minimal APIs
-|   |-- SignalR ChatHub
-|   |-- SessionStore
-|   |-- Cloudflare Tunnel Launcher
-|
-|-- index.html
-|   |-- HTML interface
-|   |-- CSS styling
-|   |-- JavaScript client
-|
-|-- cloudflared.exe
-|   |-- Cloudflare Tunnel executable for Windows
-|
-|-- LightThreads.csproj
-|   |-- Project configuration
-|
-|-- README.md
-|
-|-- LICENSE
-```
+The default local port is `5080`. Ensure the application and tunnel use the same configured endpoint.
 
-This structure describes the current intended layout and may change as development continues.
+### Cloudflare Tunnel
 
-The `cloudflared.exe` executable is specific to Windows. Other operating systems require a compatible Cloudflare Tunnel installation.
+The application integrates with `cloudflared` to establish public HTTPS connectivity without manual router port forwarding. A successful tunnel does not, by itself, guarantee a secure session. Verify tunnel configuration, application endpoint restrictions, and secret handling.
 
-## Roadmap
+### Client IP Extraction
 
-### Completed or Implemented
+When deployed behind Cloudflare, the application can use `CF-Connecting-IP` to identify the originating client IP. Only trust this header when the request arrives through a trusted proxy configuration. Do not accept arbitrary client-supplied forwarding headers as authoritative IP addresses.
 
-- Real-time messaging using SignalR
-- Host-controlled waiting room
-- Guest approval and rejection
-- Dynamic invitation-route rotation
-- Cloudflare Tunnel integration
-- Browser-based chat interface
+### Session Cleanup
 
-### Planned
+Session and room state should be removed when a session expires, the host closes it, or an invitation is revoked. The application should also handle disconnections and stale SignalR connections to avoid retaining unnecessary in-memory state.
 
-**Rate Limiting and Abuse Protection**
+## Project Status
 
-Add request limits and protections against invitation-code guessing and connection abuse.
+LightThreads is a host-controlled, browser-based private messaging project built around temporary sessions, client-side encryption, and automated public connectivity.
 
-**End-to-End Encryption**
-
-Explore client-side encryption using the Web Crypto API, including AES-GCM and a secure key exchange mechanism.
-
-**File Sharing**
-
-Allow authorized participants to exchange files temporarily.
-
-**Security Improvements**
-
-Improve session authorization, connection lifecycle handling, validation, and security testing.
-
-**Cross-Platform Support**
-
-Improve installation, tunnel discovery, and startup behavior across Windows, macOS, and Linux.
+The project provides a Windows application download path and a source-code development path. Security claims and implemented features should be verified against the current source code and published release.
 
 ## Contributing
 
-Contributions, bug reports, and suggestions are welcome.
+Contributions, bug reports, and security improvements are welcome.
 
-1. Fork the repository.
-2. Create a branch for your changes.
-3. Implement and test your changes.
-4. Submit a pull request explaining what you changed.
+When reporting an issue:
 
-For security vulnerabilities, avoid publishing exploitable details before maintainers have had an opportunity to investigate.
+- Include the operating system and .NET runtime or SDK version.
+- Describe the steps required to reproduce the problem.
+- Remove private URLs, PINs, encryption secrets, and other sensitive session details from logs and screenshots.
+- Avoid publishing exploitable security vulnerabilities in public issues before coordinating responsible disclosure with the maintainers.
+
+For security-sensitive reports, contact the repository maintainer through a verified private reporting channel.
 
 ## License
 
-LightThreads is distributed under the MIT License. Refer to the `LICENSE` file for the complete license terms.
+LightThreads is distributed under the MIT License.
 
-## About the Project
-
-LightThreads explores an approach to temporary communication in which users can host a chat application on their own computers and invite others through a browser-accessible URL.
-
-The project focuses on self-hosting, temporary sessions, host-controlled access, and real-time messaging without requiring guests to install a client application.
-
-The goal is to make it straightforward to start a conversation, share access with selected participants, and end the session when it is no longer needed.
-
-The project is open source and continues to evolve as new features and security improvements are developed.
+See [`LICENSE`](LICENSE) for the complete license text.
