@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -10,6 +10,9 @@
 	  <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
+	// This code tells that the files index.html, encryption.js, 
+	//and cloudflared.exe should be included in the output directory when the project is built or published.
+	The CopyToOutputDirectory="PreserveNewest" attribute ensures that these files are copied to the output directory only if they are newer than the existing files, preventing unnecessary overwrites.
 	<ItemGroup>
 		<None Include="index.html" CopyToOutputDirectory="PreserveNewest" />
 		<None Include="encryption.js" CopyToOutputDirectory="PreserveNewest" />
