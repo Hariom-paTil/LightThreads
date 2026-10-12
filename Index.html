@@ -162,7 +162,7 @@
 <body>
     <div id="console-container">
         <div id="header">
-            <div>LIGHTTHREADS [Version 1.6.0-HARDENED-E2E]</div>
+            <div>LIGHTTHREADS [Version 2.0.0-PRODUCTION-READY]</div>
             <div id="status">[SYSTEM] Initializing core engine...</div>
         </div>
 
@@ -211,7 +211,6 @@
             line.innerHTML = text;
             terminalLog.appendChild(line);
 
-            // Auto-purge oldest log entries if DOM buffer exceeds threshold
             while (terminalLog.children.length > MAX_LOG_ITEMS) {
                 terminalLog.removeChild(terminalLog.firstChild);
             }
@@ -280,7 +279,7 @@
             activePin = pin;
             window.history.replaceState({}, "", `/${pin}`);
 
-            statusDiv.innerText = `[CONNECTED - HARDENED E2E] Room: ${sessionId} as ${currentUsername}`;
+            statusDiv.innerText = `[CONNECTED - E2E ACTIVE] Room: ${sessionId} as ${currentUsername}`;
             statusDiv.style.color = "#00ff66";
             msgInput.disabled = false;
             sendBtn.disabled = false;
@@ -340,7 +339,7 @@
 
                 connection.invoke("RegisterHostSession", currentSessionId)
                     .then(() => {
-                        statusDiv.innerText = `[HOSTING - HARDENED E2E as ${currentUsername}] Listening on ${relativePath}`;
+                        statusDiv.innerText = `[HOSTING as ${currentUsername}] Listening on ${relativePath}`;
                         createSessionBtn.disabled = true;
                         usernameInput.disabled = true;
                         msgInput.disabled = false;

@@ -4,6 +4,15 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+	  <PublishSingleFile>true</PublishSingleFile>
+	  <SelfContained>true</SelfContained>
+	  <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+	  <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
+	<ItemGroup>
+		<None Include="index.html" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="encryption.js" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="cloudflared.exe" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
 </Project>

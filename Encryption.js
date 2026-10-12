@@ -1,9 +1,32 @@
 ﻿// =========================================================
-// LIGHTTHREADS - HARDENED CLIENT AES-GCM 256-BIT ENCRYPTION
+// LIGHTTHREADS - HARDENED UTF-8 & EMOJI SAFE AES-256 E2EE
 // =========================================================
 
 class LightEncryption {
-    // Derive AES-GCM key using PBKDF2 with dynamic room-bound salt
+    // Helper: Safe Uint8Array to Base64 (handles emojis & large buffers cleanly)
+    static bytesToBase64(bytes) {
+        let binary = '';
+        const len = bytes.byteLength;
+        const chunkSize = 0x8000; // Process in 32KB chunks to prevent stack limits
+        for (let i = 0; i < len; i += chunkSize) {
+            const chunk = bytes.subarray(i, Math.min(i + chunkSize, len));
+            binary += String.fromCharCode.apply(null, chunk);
+        }
+        return btoa(binary);
+    }
+
+    // Helper: Safe Base64 to Uint8Array
+    static base64ToBytes(base64) {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
+    }
+
+    // Derive 256-bit AES-GCM key using PBKDF2 with dynamic room-bound salt
     static async deriveKey(secretPin) {
         const enc = new TextEncoder();
         const keyMaterial = await window.crypto.subtle.importKey(
@@ -14,7 +37,6 @@ class LightEncryption {
             ["deriveBits", "deriveKey"]
         );
 
-        // Dynamic room-bound salt
         const dynamicSalt = enc.encode(`LightThreadsSalt_${secretPin}_2026`);
 
         return window.crypto.subtle.deriveKey(
@@ -47,7 +69,7 @@ class LightEncryption {
             combined.set(iv, 0);
             combined.set(new Uint8Array(ciphertext), iv.length);
 
-            return btoa(String.fromCharCode.apply(null, combined));
+            return LightEncryption.bytesToBase64(combined);
         } catch (e) {
             console.error("Encryption failed:", e);
             return plaintext;
@@ -57,9 +79,7 @@ class LightEncryption {
     static async decryptMessage(cipherBase64, secretPin) {
         try {
             const key = await LightEncryption.deriveKey(secretPin);
-            const combined = new Uint8Array(
-                atob(cipherBase64).split("").map(c => c.charCodeAt(0))
-            );
+            const combined = LightEncryption.base64ToBytes(cipherBase64);
 
             const iv = combined.slice(0, 12);
             const ciphertext = combined.slice(12);

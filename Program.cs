@@ -1,11 +1,14 @@
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.SignalR;
+using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Threading.RateLimiting;
+using System.Threading.Tasks;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,18 +23,22 @@ builder.Services.AddSignalR(options =>
 
 builder.Services.AddSingleton<SessionStore>();
 
-// 2. IP-based Rate Limiting (Anti-Brute Force)
+// 2. IP-based Rate Limiting reading real client IP behind Cloudflare Tunnel Proxy
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
     {
-        string clientIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        string clientIp = httpContext.Request.Headers["CF-Connecting-IP"].FirstOrDefault()
+            ?? httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+            ?? httpContext.Connection.RemoteIpAddress?.ToString()
+            ?? "unknown";
+
         return RateLimitPartition.GetFixedWindowLimiter(
             partitionKey: clientIp,
             factory: _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 10,
+                PermitLimit = 15,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0
             });
@@ -53,7 +60,7 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// Serve encryption.js file
+// Serve static encryption script
 app.MapGet("/encryption.js", () =>
 {
     var jsPath = Path.Combine(app.Environment.ContentRootPath, "encryption.js");
@@ -61,7 +68,7 @@ app.MapGet("/encryption.js", () =>
     return Results.Content(File.ReadAllText(jsPath), "application/javascript");
 });
 
-// Root route: Serve index.html
+// Serve index.html for root route
 app.MapGet("/", () =>
 {
     var htmlPath = Path.Combine(app.Environment.ContentRootPath, "index.html");
@@ -208,6 +215,10 @@ static void StartCloudflareTunnel(bool autoOpenBrowser)
     }
 }
 
+// =========================================================
+// TYPES & SESSION MANAGEMENT WITH CLEANUP SUPPORT
+// =========================================================
+
 public class ChatSession
 {
     public string Id { get; }
@@ -259,12 +270,25 @@ public class SessionStore
 
         return newPin;
     }
+
+    public void RemoveSession(string sessionId)
+    {
+        if (_sessionsById.TryRemove(sessionId, out var session))
+        {
+            _sessionsByPin.TryRemove(session.CurrentPin, out _);
+        }
+    }
 }
+
+// =========================================================
+// SIGNALR HUB WITH DISCONNECTION & CLEANUP HANDLERS
+// =========================================================
 
 public class ChatHub : Hub
 {
     private readonly SessionStore _sessionStore;
     private static readonly ConcurrentDictionary<string, (ChatSession Session, string GuestName)> PendingKnocks = new();
+    private static readonly ConcurrentDictionary<string, string> ConnectionToSessionMap = new();
 
     public ChatHub(SessionStore sessionStore)
     {
@@ -277,6 +301,7 @@ public class ChatHub : Hub
         if (session != null)
         {
             session.HostConnectionId = Context.ConnectionId;
+            ConnectionToSessionMap[Context.ConnectionId] = session.Id;
             await Groups.AddToGroupAsync(Context.ConnectionId, session.Id);
         }
     }
@@ -306,6 +331,7 @@ public class ChatHub : Hub
 
         if (approved)
         {
+            ConnectionToSessionMap[guestConnectionId] = session.Id;
             await Groups.AddToGroupAsync(guestConnectionId, session.Id);
             await Clients.Client(guestConnectionId).SendAsync("JoinApproved", session.Id, session.CurrentPin);
             await Clients.Group(session.Id).SendAsync("ReceiveMessage", "SYSTEM", $"{guestName} joined the session.");
@@ -321,8 +347,31 @@ public class ChatHub : Hub
 
     public async Task SendGroupMessage(string sessionId, string user, string message)
     {
-        // Enforce max server-side length check
         if (message.Length > 2048) return;
         await Clients.Group(sessionId).SendAsync("ReceiveMessage", user, message);
+    }
+
+    public override async Task OnDisconnectedAsync(Exception? exception)
+    {
+        PendingKnocks.TryRemove(Context.ConnectionId, out _);
+
+        if (ConnectionToSessionMap.TryRemove(Context.ConnectionId, out string? sessionId))
+        {
+            var session = _sessionStore.GetById(sessionId);
+            if (session != null)
+            {
+                if (session.HostConnectionId == Context.ConnectionId)
+                {
+                    await Clients.Group(sessionId).SendAsync("ReceiveMessage", "SYSTEM", "Host has left. Room closed.");
+                    _sessionStore.RemoveSession(sessionId);
+                }
+                else
+                {
+                    await Clients.Group(sessionId).SendAsync("ReceiveMessage", "SYSTEM", "A participant has disconnected.");
+                }
+            }
+        }
+
+        await base.OnDisconnectedAsync(exception);
     }
 }
