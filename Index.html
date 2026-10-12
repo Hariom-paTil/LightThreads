@@ -157,11 +157,12 @@
         }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <script src="/encryption.js"></script>
 </head>
 <body>
     <div id="console-container">
         <div id="header">
-            <div>LIGHTTHREADS [Version 1.4.0-CUSTOM-USERNAMES]</div>
+            <div>LIGHTTHREADS [Version 1.5.0-E2E-AES-256]</div>
             <div id="status">[SYSTEM] Initializing core engine...</div>
         </div>
 
@@ -192,6 +193,7 @@
 
         let currentSessionId = "";
         let currentUsername = "";
+        let activePin = "";
 
         const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
         const urlPin = pathSegments.length > 0 && pathSegments[0].length === 6 ? pathSegments[0] : null;
@@ -216,8 +218,14 @@
             .withAutomaticReconnect()
             .build();
 
-        connection.on("ReceiveMessage", (user, message) => {
-            appendLog(`[${escapeHtml(user)}] ${escapeHtml(message)}`, "user-msg");
+        // Decrypt incoming message
+        connection.on("ReceiveMessage", async (user, encryptedMessage) => {
+            if (user === "SYSTEM") {
+                appendLog(`[SYSTEM] ${escapeHtml(encryptedMessage)}`, "sys-msg");
+            } else {
+                const plaintext = await LightEncryption.decryptMessage(encryptedMessage, activePin);
+                appendLog(`[${escapeHtml(user)}] ${escapeHtml(plaintext)}`, "user-msg");
+            }
         });
 
         connection.on("SystemError", (err) => {
@@ -250,20 +258,27 @@
         });
 
         connection.on("ShiftUrlToNewPin", (newPin) => {
+            activePin = newPin; // Update active encryption secret
             const newRelativePath = `/${newPin}`;
             const fullNewUrl = `${window.location.origin}${newRelativePath}`;
 
+            // Update browser address bar
             window.history.replaceState({}, "", newRelativePath);
 
+            // Update active URL status in UI header
             sessionInfo.innerText = `Active URL: ${newRelativePath}`;
-            appendLog(`[URL SHIFTED] Old URL invalidated. Browser updated to: ${fullNewUrl}`, "warn-msg");
+
+            // Print the newly rotated public share link in the terminal log
+            appendLog(`[URL SHIFTED] Old URL invalidated.`, "warn-msg");
+            appendLog(`[NEW SHARE URL] ${fullNewUrl}`, "sys-msg");
         });
 
         connection.on("JoinApproved", (sessionId, pin) => {
             currentSessionId = sessionId;
+            activePin = pin;
             window.history.replaceState({}, "", `/${pin}`);
 
-            statusDiv.innerText = `[CONNECTED] Admitted into Room: ${sessionId} as ${currentUsername}`;
+            statusDiv.innerText = `[CONNECTED - E2E ENCRYPTED] Room: ${sessionId} as ${currentUsername}`;
             statusDiv.style.color = "#00ff66";
             msgInput.disabled = false;
             sendBtn.disabled = false;
@@ -302,7 +317,7 @@
             });
 
         createSessionBtn.addEventListener("click", async () => {
-            if (urlPin) return; // Handled by knock handler above
+            if (urlPin) return;
 
             try {
                 currentUsername = getHandle();
@@ -310,6 +325,7 @@
                 const data = await res.json();
 
                 currentSessionId = data.sessionId;
+                activePin = data.pin;
 
                 const relativePath = `/${data.pin}`;
                 const shareUrl = `${window.location.origin}${relativePath}`;
@@ -322,7 +338,7 @@
 
                 connection.invoke("RegisterHostSession", currentSessionId)
                     .then(() => {
-                        statusDiv.innerText = `[HOSTING as ${currentUsername}] Listening on ${relativePath}`;
+                        statusDiv.innerText = `[HOSTING - E2E ENCRYPTED as ${currentUsername}] Listening on ${relativePath}`;
                         createSessionBtn.disabled = true;
                         usernameInput.disabled = true;
                         msgInput.disabled = false;
@@ -334,10 +350,12 @@
             }
         });
 
-        function sendMessage() {
+        // Encrypt outgoing message
+        async function sendMessage() {
             const msg = msgInput.value.trim();
-            if (msg && currentSessionId) {
-                connection.invoke("SendGroupMessage", currentSessionId, currentUsername, msg)
+            if (msg && currentSessionId && activePin) {
+                const encryptedPayload = await LightEncryption.encryptMessage(msg, activePin);
+                connection.invoke("SendGroupMessage", currentSessionId, currentUsername, encryptedPayload)
                     .catch(err => console.error(err));
                 msgInput.value = "";
             }

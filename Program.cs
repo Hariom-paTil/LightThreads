@@ -15,7 +15,15 @@ builder.Services.AddSingleton<SessionStore>();
 
 var app = builder.Build();
 
-// 1. Root route: Serve index.html for host session creation
+// 1. Serve encryption.js file
+app.MapGet("/encryption.js", () =>
+{
+    var jsPath = Path.Combine(app.Environment.ContentRootPath, "encryption.js");
+    if (!File.Exists(jsPath)) return Results.NotFound();
+    return Results.Content(File.ReadAllText(jsPath), "application/javascript");
+});
+
+// 2. Root route: Serve index.html for host session creation
 app.MapGet("/", () =>
 {
     var htmlPath = Path.Combine(app.Environment.ContentRootPath, "index.html");
@@ -23,7 +31,7 @@ app.MapGet("/", () =>
     return Results.Content(File.ReadAllText(htmlPath), "text/html");
 });
 
-// 2. PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404
+// 3. PIN Route: Validate PIN. If revoked or invalid, return standard HTTP 404
 app.MapGet("/{pin}", (string pin, SessionStore store) =>
 {
     var session = store.GetByPin(pin);
@@ -47,15 +55,12 @@ app.MapPost("/api/session/create", (SessionStore store) =>
 app.MapHub<ChatHub>("/chat");
 
 // ---------------------------------------------------------
-// AUTOMATIC CLOUDFLARE & BROWSER LAUNCHER
+// AUTOMATIC CLOUDFLARE TUNNEL & PUBLIC BROWSER LAUNCHER
 // ---------------------------------------------------------
 app.Lifetime.ApplicationStarted.Register(() =>
 {
-    // 1. Open the local web page in the host's default browser
-    OpenBrowser("http://127.0.0.1:5080");
-
-    // 2. Start Cloudflare Tunnel in background
-    Task.Run(() => StartCloudflareTunnel());
+    // Start Cloudflare Tunnel and pass true to automatically launch public URL in browser
+    Task.Run(() => StartCloudflareTunnel(autoOpenBrowser: true));
 });
 
 app.Run();
@@ -84,8 +89,8 @@ static void OpenBrowser(string url)
     }
 }
 
-// Helper method to execute cloudflared and capture the public URL
-static void StartCloudflareTunnel()
+// Helper method to execute cloudflared, capture public URL, and launch browser
+static void StartCloudflareTunnel(bool autoOpenBrowser)
 {
     Console.ForegroundColor = ConsoleColor.Yellow;
     Console.WriteLine("\n[LIGHTTHREADS] Starting Cloudflare Tunnel process...");
@@ -126,21 +131,31 @@ static void StartCloudflareTunnel()
     try
     {
         var process = new Process { StartInfo = processInfo };
+        bool browserLaunched = false;
 
         process.ErrorDataReceived += (sender, e) =>
         {
             if (!string.IsNullOrEmpty(e.Data))
             {
                 var match = Regex.Match(e.Data, @"https://[-a-zA-Z0-9@:%._\+~#=]{1,256}\.trycloudflare\.com");
-                if (match.Success)
+                if (match.Success && !browserLaunched)
                 {
+                    browserLaunched = true;
+                    string publicUrl = match.Value;
+
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine("\n=========================================================");
                     Console.WriteLine($" [PUBLIC HTTPS URL ACTIVE]");
-                    Console.WriteLine($" {match.Value}");
-                    Console.WriteLine(" Share this public address with your friend anywhere in the world!");
+                    Console.WriteLine($" {publicUrl}");
+                    Console.WriteLine(" Tunnel ready! Launching browser in 3 seconds...");
                     Console.WriteLine("=========================================================\n");
                     Console.ResetColor();
+
+                    if (autoOpenBrowser)
+                    {
+                        // Wait 3 seconds for DNS propagation before launching browser
+                        Task.Delay(3000).ContinueWith(_ => OpenBrowser(publicUrl));
+                    }
                 }
             }
         };
@@ -154,9 +169,13 @@ static void StartCloudflareTunnel()
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine($"\n[ERROR] Could not launch cloudflared: {ex.Message}");
         Console.ResetColor();
+
+        if (autoOpenBrowser)
+        {
+            OpenBrowser("http://127.0.0.1:5080");
+        }
     }
 }
-
 // =========================================================
 // TYPES & SESSION MANAGEMENT
 // =========================================================
