@@ -10,12 +10,15 @@
 	  <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
-	// This code tells that the files index.html, encryption.js, 
-	//and cloudflared.exe should be included in the output directory when the project is built or published.
-	The CopyToOutputDirectory="PreserveNewest" attribute ensures that these files are copied to the output directory only if they are newer than the existing files, preventing unnecessary overwrites.
+
 	<ItemGroup>
-		<None Include="index.html" CopyToOutputDirectory="PreserveNewest" />
-		<None Include="encryption.js" CopyToOutputDirectory="PreserveNewest" />
-		<None Include="cloudflared.exe" CopyToOutputDirectory="PreserveNewest" />
+		<Content Include="index.html" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+		<Content Include="encryption.js" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
+		<Content Include="cloudflared.exe" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" />
 	</ItemGroup>
+
+	<!-- Force MSBuild to copy cloudflared.exe from the source folder into the publish folder -->
+	<Target Name="CopyCloudflaredToPublish" AfterTargets="Publish">
+		<Copy SourceFiles="cloudflared.exe" DestinationFolder="$(PublishDir)" ContinueOnError="false" />
+	</Target>
 </Project>
